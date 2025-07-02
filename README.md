@@ -36,7 +36,7 @@ Example:
 ```asm
 ADDEQ R1, R2, #10
 CMPNE R0, #100
-
+```
 
 ## 📦 Project Structure
 armv7_dp/
@@ -67,6 +67,7 @@ python -m armv7_dp.cli asm input.s -j 0 > output.hex
 
 ```bash
 python -m armv7_dp.cli dis output.hex -j 0
+```
 
 - **dis:** mode for disassembling
 - **output.hex:** file with 32-bit ARM instructions in hex (e.g. **0xE281100A**)
@@ -80,7 +81,7 @@ python -m armv7_dp.cli dis output.hex -j 0
 ADD R1, R1, #10
 MOVNE R0, #100
 CMP R3, #255
-
+```
 
 ### 🧾 Resulting Hex Output
 
@@ -88,7 +89,7 @@ CMP R3, #255
 0xE281100A
 0x13A00064
 0xE35300FF
-
+```
 
 ### 🔁 Disassembled Output
 
@@ -96,6 +97,7 @@ CMP R3, #255
 ADDAL R1, R1, #10
 MOVNE R0, #100
 CMPAL R3, #255
+```
 
 ## ⚙️ How It Works
 
