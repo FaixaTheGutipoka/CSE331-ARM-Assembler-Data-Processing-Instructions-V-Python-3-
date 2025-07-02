@@ -55,8 +55,12 @@ Token = re.compile(
     (?:\s*,\s*R(?P<Rn>\d{1,2}))?                      # optional first operand
     \s*,\s*
     
-    #<imm>                                            # immediate second operand
-    \#(?P<imm>-?\d+)
+    (?:
+        \#(?P<imm>-?\d+)                          # immediate (e.g., #42)
+        |
+        R(?P<Rm>\d{1,2})                          # or register (e.g., R2)
+    )
+
     \s*$
     """,
     re.VERBOSE | re.IGNORECASE,
@@ -78,9 +82,15 @@ def parse_line(line: str) -> Tuple[str, str, int, int, int]:
     cond = (match.group("cond") or "AL").upper()            # default to AL (always) if no condition is specified
     Rd = int(match.group("Rd"))                             # destination register
     Rn = int(match.group("Rn") or 0)                        # optional first operand
-    imm = int(match.group("imm"))                           # immediate second operand, convert to integer
+    
+    if match.group("imm") is not None:
+        is_imm = True
+        operand = int(match.group("imm"))                   # immediate value (e.g., #42)
+    else:
+        is_imm = False
+        operand = int(match.group("Rm"))                    # register operand (e.g., R2)
 
-    return mnemonic, cond, Rd, Rn, imm
+    return mnemonic, cond, Rd, Rn, operand, is_imm
 
 
 # 3. Immediate-12 encoder   (rotate-right until fits in 8 bits)
@@ -102,7 +112,7 @@ def encode_imm12(value: int) -> int:
 
 
 # 4. Assemble one instruction → 32-bit word
-def assemble_one(mnem: str, cond: str, Rd: int, Rn: int, imm: int) -> int:
+def assemble_one(mnem: str, cond: str, Rd: int, Rn: int, op2: int, is_imm: bool) -> int:
 
     """
     The goal of the function is to turn one parsed assembly instruction into the
@@ -114,22 +124,28 @@ def assemble_one(mnem: str, cond: str, Rd: int, Rn: int, imm: int) -> int:
 
     opcode = OpCodes[mnem]                              # Get the opcode for the mnemonic
     cond_bits = Cond.get(cond, 0xE)                     # Get the condition bits, default to AL (0xE) if not specified
-    imm12 = encode_imm12(imm)                           # Encode the immediate value into the imm12 field
-
+    
     is_test = opcode in (0x8, 0x9, 0xA, 0xB)            # TST,TEQ,CMP,CMN
     S = 1 if is_test else 0                             # Set S bit for test instructions, otherwise 0. Automatically setting S = 1 if the instruction must update flags by design.
     if mnem == "MOV":
         Rn = 0                                          # MOV ignores Rn
 
+    if is_imm:
+        I = 1
+        op2_field = encode_imm12(op2)
+    else:
+        I = 0
+        op2_field = op2                                 # Rm is directly encoded in bits [3:0]
+        
     return (
         (cond_bits << 28)          # bits 31-28 — condition
-        | (0b001 << 25)            # bit 25 = I-bit = 1 (immediate)
+        | (I << 25)                # bit 25 = I-bit = 1 (immediate)
                                    # bits 27-26 = 00 (data-proc class); by default it is 00 for any data processing instructions
         | (opcode << 21)           # bits 24-21 — opcode
         | (S << 20)                # bit 20 — set-flags
         | (Rn << 16)               # bits 19-16 — first operand register
         | (Rd << 12)               # bits 15-12 — destination register
-        | imm12                    # bits 11-0  — immediate field
+        | op2_field                # bits 11-0 — second operand (immediate or register)
     )
 
 
@@ -161,7 +177,8 @@ def assemble_lines(lines: List[str]) -> List[Tuple[str, int]]:
         if not src:
             continue
         try:
-            word = assemble_one(*parse_line(src))
+            mnem, cond, Rd, Rn, op2, is_imm = parse_line(src)
+            word = assemble_one(mnem, cond, Rd, Rn, op2, is_imm)
             machine.append((src, word))
         except Exception as e:
             raise RuntimeError(f"[line {idx}] {e}") from None
