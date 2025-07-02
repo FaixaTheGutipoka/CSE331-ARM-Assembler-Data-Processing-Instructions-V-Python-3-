@@ -1,4 +1,4 @@
-import argparse, fileinput, re, sys, os
+import argparse, fileinput, re, sys, multiprocessing
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from typing import List, Tuple
 
@@ -111,7 +111,7 @@ def parse_line(line: str):
     return mnemonic, cond, Rd, Rn, Rm, False, shiftop, shiftimm
 
 
-# 3. Immediate-12 encoder   (rotate-right until fits in 8 bits)
+# 3. Encodes
 def encode_imm12(value: int) -> int:
 
     """
@@ -175,64 +175,64 @@ def assemble_one(mnem, cond, Rd, Rn, op2, is_imm, shiftop, shiftimm):
     )
 
 
-# 5. Formatting results
+# 5. top-level worker (must be picklable!): for parallel processing
+def worker(idx_line):
+    idx,line = idx_line
+    src=line.partition(";")[0].strip()
+    if not src: return None
+    try: return idx,src,assemble_one(*parse_line(src))
+    except Exception as e: raise RuntimeError(f"[line {idx}] {e}") from None
 
-# HEX
-def word_to_hex(word: int) -> str: return f"0x{word:08X}"
-# BIN
-def word_to_bin(word: int) -> str: return f"{word:032b}"
-# RAW
-def to_bytes(ws:List[int])->bytes: return b"".join(w.to_bytes(4,"little") for w in ws)
 
+# 6.  Serial & Parallel assemblers
 
-# 6. Assemble a list of lines
-def assemble_lines(lines: List[str]) -> List[Tuple[str, int]]:
-
-    """ 
-    This function takes a list of assembly lines as strings (e.g., from a .s file) and:
-    - Cleans them
-    - Parses each into components (like "ADD", R1, etc.)
-    - Converts them to machine instructions (32-bit ints)
-    - Returns the list of final machine instructions
-    """
-
+def assemble_serial(lines:List[str])->List[Tuple[str,int]]:                 
     machine=[]
-    for idx,raw in enumerate(lines,1):
-        src=raw.partition(";")[0].strip()
-        if not src: continue
-        try:
-            parts=parse_line(src)
-            word=assemble_one(*parts)
-            machine.append((src,word))
-        except Exception as e:
-            raise RuntimeError(f"[line {idx}] {e}") from None
+    for idx, line in enumerate(lines,1):                                                # Enumerate lines starting from 1
+        src=line.partition(";")[0].strip()                                             # Remove inline comments and whitespace
+        if not src: continue                                                        # Skip blank or comment-only lines
+        try: machine.append((src,assemble_one(*parse_line(src))))                       # Parse and assemble the instruction
+        except Exception as e: raise RuntimeError(f"[line {idx}] {e}") from None       
     return machine
 
+def assemble_parallel(lines:List[str])->List[Tuple[str,int]]:
+    with ProcessPoolExecutor() as pool:
+        res=pool.map(worker, enumerate(lines,1))
+    ordered=[None]*len(lines)
+    for r in res:
+        if r:
+            idx,src,word=r
+            ordered[idx-1]=(src,word)
+    return [p for p in ordered if p]
 
-# 7. CLI interface
-def main() -> None:
-    
-    ap=argparse.ArgumentParser(description="ARMv7 DP assembler (imm + shifted reg)")
-    ap.add_argument("files",nargs="*",help="assembly source (.s); stdin if none")
+# 7. Formatting results
+h=lambda w:f"0x{w:08X}"
+b=lambda w:f"{w:032b}"
+def to_bytes(ws): return b"".join(w.to_bytes(4,"little") for w in ws)
+
+# 8. CLI interface
+def main():
+    ap=argparse.ArgumentParser(description="ARMv7 DP assembler (serial/parallel)")
+    ap.add_argument("files",nargs="*",help="assembly source; stdin if none")
+    ap.add_argument("--parallel",action="store_true",help="use all CPU cores")
     ap.add_argument("--format",choices=["table","raw"],default="table")
-    ap.add_argument("--out",help="output file for --format raw")
+    ap.add_argument("--out",help="output file for raw")
     args=ap.parse_args()
 
-    pairs=assemble_lines(list(fileinput.input(args.files or ("-",))))
+    lines=list(fileinput.input(args.files or ("-",)))
+    pairs = assemble_parallel(lines) if args.parallel else assemble_serial(lines)
 
     if args.format=="raw":
-        if not args.out:
-            print("--out FILE required with --format raw",file=sys.stderr);sys.exit(1)
-        with open(args.out,"wb") as f:
-            f.write(to_bytes([w for _,w in pairs]))
+        if not args.out: sys.exit("--out FILE required for raw")
+        with open(args.out,"wb") as f: f.write(to_bytes([w for _,w in pairs]))
         return
 
-    # Table output
     print(f"{'ASSEMBLY':<40} | {'HEX':<10} | BINARY")
     print("-"*40+"-+-"+"-"*10+"-+-"+"-"*32)
     for asm,word in pairs:
-        print(f"{asm:<40} | {word_to_hex(word):<10} | {word_to_bin(word)}")
+        print(f"{asm:<40} | {h(word):<10} | {b(word)}")
 
 
 if __name__ == "__main__":
+    multiprocessing.freeze_support()   # for Windows
     main()
