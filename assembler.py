@@ -4,7 +4,7 @@ from typing import List, Tuple
 
 
 
-# 1. Opcode / condition lookup tables
+# 1. Opcode / condition / shift lookup tables
 
 OpCodes = {
     "AND": 0x00,
@@ -43,22 +43,32 @@ Cond = {
     "AL": 0x0E,
 }
 
+ShiftTypes = {                  
+    "LSL": 0b00,
+    "LSR": 0b01,
+    "ASR": 0b10,
+    "ROR": 0b11,
+}                   
 
 # 2. Simple regex tokenizer / parser
 Token = re.compile(
     r"""
     ^\s*                                              # start of line, optional whitespace
-                            
-    (?P<mnemonic>[A-Z]{2,3})(?P<cond>[A-Z]{2})?      # ADD  /  EQ
+
+    (?P<mnemonic>[A-Z]{2,3})(?P<cond>[A-Z]{2})?       # mnemonic + optional condition
     \s+
     R(?P<Rd>\d{1,2})                                  # destination register
-    (?:\s*,\s*R(?P<Rn>\d{1,2}))?                      # optional first operand
+    (?:\s*,\s*R(?P<Rn>\d{1,2}))?                      # optional Rn
     \s*,\s*
-    
+
     (?:
-        \#(?P<imm>-?\d+)                          # immediate (e.g., #42)
-        |
-        R(?P<Rm>\d{1,2})                          # or register (e.g., R2)
+        \#(?P<imm>-?\d+)                              # immediate value
+      |
+        R(?P<Rm>\d{1,2})                              # register operand
+        (?:\s*,?\s*                                   # optional comma
+            (?P<shiftop>LSL|LSR|ASR|ROR|RRX)          # optional shift type
+            (?:\s*\#(?P<shiftimm>\d+))?               # optional shift amount
+        )?                                            # end of shift clause
     )
 
     \s*$
@@ -66,31 +76,39 @@ Token = re.compile(
     re.VERBOSE | re.IGNORECASE,
 )
 
-def parse_line(line: str) -> Tuple[str, str, int, int, int]:
+
+
+
+def parse_line(line: str):
 
     """
     Parse 'ADDNE R1, R2, #42' → ('ADD','NE',1,2,42)
     Raises ValueError on bad syntax.
     """
 
-    match = Token.match(line)                               # match the line against the regex pattern
+    match = Token.match(line)                                                       # match the line against the regex pattern
 
     if not match:
-        raise ValueError(f"syntax error: «{line.strip()}»") # raise an error if the line doesn't match the expected format
+        raise ValueError(f"syntax error: «{line.strip()}»")                         # raise an error if the line doesn't match the expected format
 
-    mnemonic = match.group("mnemonic").upper()              # convert mnemonic to uppercase. addne or AdD is treated the same as ADD
-    cond = (match.group("cond") or "AL").upper()            # default to AL (always) if no condition is specified
-    Rd = int(match.group("Rd"))                             # destination register
-    Rn = int(match.group("Rn") or 0)                        # optional first operand
+    mnemonic = match.group("mnemonic").upper()                                      # convert mnemonic to uppercase. addne or AdD is treated the same as ADD
+    cond = (match.group("cond") or "AL").upper()                                    # default to AL (always) if no condition is specified
+    Rd = int(match.group("Rd"))                                                     # destination register
+    Rn = int(match.group("Rn") or 0)                                                # optional first operand
     
     if match.group("imm") is not None:
-        is_imm = True
-        operand = int(match.group("imm"))                   # immediate value (e.g., #42)
+        return mnemonic, cond, Rd, Rn, int(match.group("imm")), True, None, None    # immediate value (e.g., #42)
+    
+    # register form (with optional shift)
+    Rm = int(match.group("Rm"))
+    shiftop = (match.group("shiftop") or "LSL").upper()
+    if shiftop == "RRX":
+        shiftimm = 0
     else:
-        is_imm = False
-        operand = int(match.group("Rm"))                    # register operand (e.g., R2)
-
-    return mnemonic, cond, Rd, Rn, operand, is_imm
+        shiftimm = int(match.group("shiftimm") or 0)
+        if not 0 <= shiftimm <= 31:
+            raise ValueError("shift immediate must be 0-31")
+    return mnemonic, cond, Rd, Rn, Rm, False, shiftop, shiftimm
 
 
 # 3. Immediate-12 encoder   (rotate-right until fits in 8 bits)
@@ -107,12 +125,20 @@ def encode_imm12(value: int) -> int:
         
         if low8 <= 0xFF:                                                # If the low 8 bits fit in an 8-bit value
             return (rot // 2) << 8 | low8                               # Return the imm12 field (rotate:4 | imm8)
-    
-    raise ValueError(f"immediate {value} cannot be encoded in imm12")   # Raise an error if no valid encoding is found
+
+    raise ValueError(f"{value} not encodable in imm12")                 # Raise an error if no valid encoding is found
+
+
+def encode_reg_shift(Rm: int, shiftop: str, shiftimm: int) -> int:
+    if shiftop == "RRX":
+        # imm5=0, type=ROR(11), bit 4 = 0
+        return (0 << 7) | (0b11 << 5) | (Rm & 0xF)
+    stype = ShiftTypes[shiftop]
+    return ((shiftimm & 0x1F) << 7) | (stype << 5) | (Rm & 0xF)
 
 
 # 4. Assemble one instruction → 32-bit word
-def assemble_one(mnem: str, cond: str, Rd: int, Rn: int, op2: int, is_imm: bool) -> int:
+def assemble_one(mnem, cond, Rd, Rn, op2, is_imm, shiftop, shiftimm):
 
     """
     The goal of the function is to turn one parsed assembly instruction into the
@@ -128,15 +154,15 @@ def assemble_one(mnem: str, cond: str, Rd: int, Rn: int, op2: int, is_imm: bool)
     is_test = opcode in (0x8, 0x9, 0xA, 0xB)            # TST,TEQ,CMP,CMN
     S = 1 if is_test else 0                             # Set S bit for test instructions, otherwise 0. Automatically setting S = 1 if the instruction must update flags by design.
     if mnem == "MOV":
-        Rn = 0                                          # MOV ignores Rn
+        Rn = 0                                                # MOV ignores Rn
 
     if is_imm:
         I = 1
         op2_field = encode_imm12(op2)
     else:
         I = 0
-        op2_field = op2                                 # Rm is directly encoded in bits [3:0]
-        
+        op2_field = encode_reg_shift(op2, shiftop, shiftimm) # Rm is directly encoded in bits [3:0]
+
     return (
         (cond_bits << 28)          # bits 31-28 — condition
         | (I << 25)                # bit 25 = I-bit = 1 (immediate)
@@ -156,8 +182,7 @@ def word_to_hex(word: int) -> str: return f"0x{word:08X}"
 # BIN
 def word_to_bin(word: int) -> str: return f"{word:032b}"
 # RAW
-def to_bytes(words: List[int]) -> bytes:
-    return b"".join(w.to_bytes(4, "little") for w in words)
+def to_bytes(ws:List[int])->bytes: return b"".join(w.to_bytes(4,"little") for w in ws)
 
 
 # 6. Assemble a list of lines
@@ -171,46 +196,42 @@ def assemble_lines(lines: List[str]) -> List[Tuple[str, int]]:
     - Returns the list of final machine instructions
     """
 
-    machine: List[Tuple[str, int]] = [] 
-    for idx, raw in enumerate(lines, 1):
-        src = raw.partition(";")[0].strip()
-        if not src:
-            continue
+    machine=[]
+    for idx,raw in enumerate(lines,1):
+        src=raw.partition(";")[0].strip()
+        if not src: continue
         try:
-            mnem, cond, Rd, Rn, op2, is_imm = parse_line(src)
-            word = assemble_one(mnem, cond, Rd, Rn, op2, is_imm)
-            machine.append((src, word))
+            parts=parse_line(src)
+            word=assemble_one(*parts)
+            machine.append((src,word))
         except Exception as e:
             raise RuntimeError(f"[line {idx}] {e}") from None
     return machine
 
 
-# 7. Command-line interface
+# 7. CLI interface
 def main() -> None:
     
-    ap = argparse.ArgumentParser(description="ARMv7 DP-immediate assembler")
-    ap.add_argument("files", nargs="*", help="Assembly source files (stdin if none)")
-    ap.add_argument("--format", choices=["table", "raw"], default="table",
-                    help="table (default) or raw bytes")
-    ap.add_argument("--out", help="Output file for --format raw")
-    args = ap.parse_args()
+    ap=argparse.ArgumentParser(description="ARMv7 DP assembler (imm + shifted reg)")
+    ap.add_argument("files",nargs="*",help="assembly source (.s); stdin if none")
+    ap.add_argument("--format",choices=["table","raw"],default="table")
+    ap.add_argument("--out",help="output file for --format raw")
+    args=ap.parse_args()
 
-    src_lines = list(fileinput.input(args.files if args.files else ("-",)))
-    words = assemble_lines(src_lines)
+    pairs=assemble_lines(list(fileinput.input(args.files or ("-",))))
 
-    if args.format == "raw":
+    if args.format=="raw":
         if not args.out:
-            print("--out FILE required with --format raw", file=sys.stderr)
-            sys.exit(1)
-        with open(args.out, "wb") as f:
-            f.write(to_bytes([w for _, w in words]))
+            print("--out FILE required with --format raw",file=sys.stderr);sys.exit(1)
+        with open(args.out,"wb") as f:
+            f.write(to_bytes([w for _,w in pairs]))
         return
 
     # Table output
-    print(f"{'ASSEMBLY':<30} | {'HEX':<10} | BINARY")
-    print("-" * 30 + "-+-" + "-" * 10 + "-+-" + "-" * 32)
-    for asm, word in words:
-        print(f"{asm:<30} | {word_to_hex(word):<10} | {word_to_bin(word)}")
+    print(f"{'ASSEMBLY':<40} | {'HEX':<10} | BINARY")
+    print("-"*40+"-+-"+"-"*10+"-+-"+"-"*32)
+    for asm,word in pairs:
+        print(f"{asm:<40} | {word_to_hex(word):<10} | {word_to_bin(word)}")
 
 
 if __name__ == "__main__":
