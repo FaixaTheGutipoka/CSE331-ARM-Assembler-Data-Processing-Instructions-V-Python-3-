@@ -43,12 +43,13 @@ CMPNE R0, #100
 ---
 
 ## 📦 Project Structure
+```
 armv7_dp/
 ├── assembler.py        # Encodes instructions to 32-bit binary
 ├── demo.s              # Assembly language 
 ├── demo.bin
 └── .gitignore
-
+```
 demo.s                  # Test runner and sample usage
 README.md               # You're reading it
 
