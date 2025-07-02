@@ -56,6 +56,7 @@ README.md               # You're reading it
 
 ```bash
 python -m armv7_dp.cli asm input.s -j 0 > output.hex
+```
 
 - **asm:** mode for assembling
 - **input.s:** file with ARMv7 data processing instructions (one per line)
@@ -167,7 +168,7 @@ See the LICENSE file for details.
 
 
 ## 👨‍💻 Maintainer
-Developed and maintained by Labiba Faiza Karim
+Developed and maintained by **Labiba Faiza Karim**
 Contributions and forks are welcome. If you'd like to submit fixes or enhancements, feel free to open an issue or a pull request.
 
 ## 🌐 Connect
