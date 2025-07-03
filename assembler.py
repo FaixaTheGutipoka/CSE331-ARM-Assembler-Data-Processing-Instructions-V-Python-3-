@@ -1,4 +1,4 @@
-import argparse, fileinput, re, sys, multiprocessing
+import argparse, fileinput, re, sys, multiprocessing, time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from typing import List, Tuple
 
@@ -220,7 +220,13 @@ def main():
     args=ap.parse_args()
 
     lines=list(fileinput.input(args.files or ("-",)))
+
+    # start timer
+    t0=time.perf_counter()
+
     pairs = assemble_parallel(lines) if args.parallel else assemble_serial(lines)
+
+    elapsed = time.perf_counter() - t0  # stop timer
 
     if args.format=="raw":
         if not args.out: sys.exit("--out FILE required for raw")
@@ -231,7 +237,9 @@ def main():
     print("-"*40+"-+-"+"-"*10+"-+-"+"-"*32)
     for asm,word in pairs:
         print(f"{asm:<40} | {h(word):<10} | {b(word)}")
-
+    
+    print(f"\n✓ Assembled {len(pairs)} instructions in {elapsed:.4f} s "
+          f"({'parallel' if args.parallel else 'serial'})")
 
 if __name__ == "__main__":
     multiprocessing.freeze_support()   # for Windows
