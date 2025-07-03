@@ -239,7 +239,7 @@ Planned expansions include:
 ---
 
 
-## 👨‍💻 Maintainer
+## 👨‍💻 Developer
 Developed and maintained by **Labiba Faiza Karim**
 
 For queries or collaboration, reach out at:
