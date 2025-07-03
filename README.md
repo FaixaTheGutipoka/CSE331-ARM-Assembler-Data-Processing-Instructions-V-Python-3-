@@ -8,14 +8,14 @@ This project is a high-speed, parallelized **assembler and disassembler** for **
 
 ## 📌 Key Features
 
-- ✅ ARMv7-A (A32) Data Processing Instruction support
-- ✅ Register-to-register and immediate operands (e.g., `R1, R2`, or `#5`)
-- ✅ All conditional suffixes (e.g., `ADDEQ`, `MOVNE`)
-- ✅ Full support for shift operations (e.g., `LSL`, `ASR`)
-- ✅ CLI with both serial and parallel execution options
-- ✅ Fast multiprocessing with `--parallel` flag
-- ✅ Clean and modular codebase
-- ✅ Table or raw binary output options
+- ✅ Supports ARMv7-A (A32) Data Processing Instructions
+- ✅ Both immediate and shifted register operands
+- ✅ All conditional suffixes (`EQ`, `NE`, `GE`, etc.)
+- ✅ Shift operations (`LSL`, `ASR`, `ROR`, etc.)
+- ✅ Serial and **parallel** processing modes
+- ✅ `--parallel` flag for multi-core usage
+- ✅ Table or `.bin` output format
+- ✅ Pure Python — no external dependencies
 
 ---
 
@@ -105,22 +105,38 @@ CMP R3, #255                            | 0xE35300FF | 1110001101010011000000001
 SUB R2, R2, R0, LSL #2                  | 0xE0420200 | 11100000010000100010001000000000
 ```
 
-## ⚙️ How It Works
+## 🧠 Implementation Details
 
-1. **Tokenizer:** Uses regex to parse instructions and extract fields (mnemonic, registers, condition, shifts, immediates).
+1. **Regex-based parsing** of instructions and operands  
+   - Uses a single comprehensive regex pattern to tokenize ARMv7 Data Processing instructions.
 
-2. **Assembler:** Converts parsed fields to 32-bit ARM machine code using ARM encoding rules (e.g., **imm12**, shifts).
+2. **Instruction encoder** that constructs ARMv7 32-bit machine words  
+   - Encodes immediate and register-based operations with optional shifts, following ARM encoding rules.
 
-3. **Parallelism:** With **--parallel**, each instruction is assembled in a separate process via **ProcessPoolExecutor**.
+3. **Parallelism** using `concurrent.futures.ProcessPoolExecutor`  
+   - Lines are divided into batches (`--batch-size`)  
+   - Each batch is processed by a separate worker process  
+   - Results are collected and ordered back into the original sequence
 
-4. **Output:** You can print results to terminal (**table**) or save to a **.bin** file (**raw**).
+4. **Output formatting**  
+   - Supports human-readable table output (with hex and binary representations)  
+   - Can optionally export raw binary (`--format raw`) for further use in emulators or hardware environments
+
 
 
 ---
 
-## 🔥 Performance
+## 🚀 Performance
 
-This assembler is optimized for both **correctness and speed**, especially when using the `--parallel` flag.
+This assembler is optimized for correctness and speed. However, due to Python’s multiprocessing overhead, **parallel mode currently does not outperform serial mode** on small- to medium-sized inputs.
+
+### ⚙️ Current Status
+
+- ✅ **Serial mode**: highly optimized, fast
+- ⚠️ **Parallel mode**: implemented using `ProcessPoolExecutor` and batching
+- ⏱️ **Small files (<10,000 lines)**: serial mode is currently faster
+- ⚙️ **Parallel performance** is expected to improve with larger files and refined batch handling
+
 
 ### ⚡ Benchmarks:
 
@@ -225,9 +241,7 @@ Planned expansions include:
 
 ## 👨‍💻 Maintainer
 Developed and maintained by **Labiba Faiza Karim**
-Contributions and forks are welcome. If you'd like to submit fixes or enhancements, feel free to open an issue or a pull request.
 
-## 🌐 Connect
 For queries or collaboration, reach out at:
 - **Email**: [karim.labibafaiza2002@gmail.com]
 - **LinkedIn**: [https://www.linkedin.com/in/labiba-faiza-karim-6057b8217/]
