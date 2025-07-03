@@ -1,6 +1,7 @@
 import argparse, fileinput, re, sys, multiprocessing, time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from typing import List, Tuple
+from itertools import islice
 
 
 
@@ -77,8 +78,7 @@ Token = re.compile(
 )
 
 
-
-
+# 3. Parser
 def parse_line(line: str):
 
     """
@@ -111,7 +111,7 @@ def parse_line(line: str):
     return mnemonic, cond, Rd, Rn, Rm, False, shiftop, shiftimm
 
 
-# 3. Encodes
+# 4. Encodes
 def encode_imm12(value: int) -> int:
 
     """
@@ -137,7 +137,7 @@ def encode_reg_shift(Rm: int, shiftop: str, shiftimm: int) -> int:
     return ((shiftimm & 0x1F) << 7) | (stype << 5) | (Rm & 0xF)
 
 
-# 4. Assemble one instruction → 32-bit word
+# 5. Assemble one instruction → 32-bit word
 def assemble_one(mnem, cond, Rd, Rn, op2, is_imm, shiftop, shiftimm):
 
     """
@@ -174,18 +174,48 @@ def assemble_one(mnem, cond, Rd, Rn, op2, is_imm, shiftop, shiftimm):
         | op2_field                # bits 11-0 — second operand (immediate or register)
     )
 
+# 6. Chunck helper
+def chunked(iterable, size):
+    it = iter(iterable)
+    while True:
+        batch = list(islice(it, size))
+        if not batch:
+            return
+        yield batch
 
-# 5. top-level worker (must be picklable!): for parallel processing
-def worker(idx_line):
-    idx,line = idx_line
-    src=line.partition(";")[0].strip()
-    if not src: return None
-    try: return idx,src,assemble_one(*parse_line(src))
-    except Exception as e: raise RuntimeError(f"[line {idx}] {e}") from None
+# 7. top-level worker (must be picklable!): for parallel processing
+def worker_batch(idx_batch: int,
+                 lines_batch: List[str],
+                 batch_size: int
+                ) -> List[Tuple[int, str, int]]:
+    """
+    Assemble one batch of lines:
+      - idx_batch: which batch number (0-based)
+      - lines_batch: list of source lines
+      - batch_size: size of each batch, so we can compute the original line numbers
+
+    Returns a list of tuples (original_line_index, source_text, machine_word).
+    """
+    results = []
+    base = idx_batch * batch_size
+    for offset, line in enumerate(lines_batch):
+        src = line.partition(";")[0].strip()
+        if not src:
+            continue
+        word = assemble_one(*parse_line(src))
+        results.append((base + offset + 1, src, word))
+    return results
+
+def worker_batch_star(args):
+    """
+    Unpack a single tuple (idx_batch, lines_batch, batch_size)
+    and call worker_batch.
+    """
+    return worker_batch(*args)
 
 
-# 6.  Serial & Parallel assemblers
 
+# 8.  Serial & Parallel assemblers
 def assemble_serial(lines:List[str])->List[Tuple[str,int]]:                 
     machine=[]
     for idx, line in enumerate(lines,1):                                                # Enumerate lines starting from 1
@@ -195,49 +225,65 @@ def assemble_serial(lines:List[str])->List[Tuple[str,int]]:
         except Exception as e: raise RuntimeError(f"[line {idx}] {e}") from None       
     return machine
 
-def assemble_parallel(lines:List[str])->List[Tuple[str,int]]:
+def assemble_parallel(lines: List[str], batch_size: int = 100) -> List[Tuple[str,int]]:
+    """
+    Split into batches, run worker_batch in parallel via executor.map,
+    then flatten & reorder.
+    """
+    batches = list(chunked(lines, batch_size))
+    # Build a list of argument tuples
+    args_list = [(i, batch, batch_size) for i, batch in enumerate(batches)]
     with ProcessPoolExecutor() as pool:
-        res=pool.map(worker, enumerate(lines,1))
-    ordered=[None]*len(lines)
-    for r in res:
-        if r:
-            idx,src,word=r
-            ordered[idx-1]=(src,word)
-    return [p for p in ordered if p]
+        # Use map on the top‐level worker_batch_star
+        all_batches = pool.map(worker_batch_star, args_list)
+    # Flatten and sort by original line index
+    flat = [item for batch in all_batches for item in batch]
+    flat.sort(key=lambda t: t[0])
+    return [(src, word) for _, src, word in flat]
 
-# 7. Formatting results
+
+# 9. Formatting results
 h=lambda w:f"0x{w:08X}"
 b=lambda w:f"{w:032b}"
 def to_bytes(ws): return b"".join(w.to_bytes(4,"little") for w in ws)
 
-# 8. CLI interface
-def main():
-    ap=argparse.ArgumentParser(description="ARMv7 DP assembler (serial/parallel)")
-    ap.add_argument("files",nargs="*",help="assembly source; stdin if none")
-    ap.add_argument("--parallel",action="store_true",help="use all CPU cores")
-    ap.add_argument("--format",choices=["table","raw"],default="table")
-    ap.add_argument("--out",help="output file for raw")
-    args=ap.parse_args()
 
-    lines=list(fileinput.input(args.files or ("-",)))
+
+# 10. CLI interface
+def main():
+    ap = argparse.ArgumentParser(description="ARMv7 DP assembler (serial / parallel, batched)")
+    ap.add_argument("files", nargs="*", help="ARM assembly source; stdin if none")
+    ap.add_argument("--parallel", action="store_true", help="enable multiprocessing")
+    ap.add_argument("--batch-size", type=int, default=100,
+                    help="number of lines per parallel batch")
+    ap.add_argument("--format", choices=["table","raw"], default="table",
+                    help="output format")
+    ap.add_argument("--out", help="file for raw output (.bin)")
+    args = ap.parse_args()
+
+    lines = list(fileinput.input(args.files or ("-",)))
 
     # start timer
-    t0=time.perf_counter()
+    t0 = time.perf_counter()
+    if args.parallel:
+        pairs = assemble_parallel(lines, batch_size=args.batch_size)
+    else:
+        pairs = assemble_serial(lines)
+    elapsed = time.perf_counter() - t0
 
-    pairs = assemble_parallel(lines) if args.parallel else assemble_serial(lines)
-
-    elapsed = time.perf_counter() - t0  # stop timer
-
-    if args.format=="raw":
-        if not args.out: sys.exit("--out FILE required for raw")
-        with open(args.out,"wb") as f: f.write(to_bytes([w for _,w in pairs]))
+    if args.format == "raw":
+        if not args.out:
+            sys.exit("--out FILE required with --format raw")
+        with open(args.out, "wb") as f:
+            f.write(to_bytes([w for _, w in pairs]))
+        print(f"✓ {len(pairs)} instrs in {elapsed:.4f}s "
+              f"({'parallel' if args.parallel else 'serial'})")
         return
 
     print(f"{'ASSEMBLY':<40} | {'HEX':<10} | BINARY")
-    print("-"*40+"-+-"+"-"*10+"-+-"+"-"*32)
-    for asm,word in pairs:
+    print("-"*40 + "-+-" + "-"*10 + "-+-" + "-"*32)
+    for asm, word in pairs:
         print(f"{asm:<40} | {h(word):<10} | {b(word)}")
-    
     print(f"\n✓ Assembled {len(pairs)} instructions in {elapsed:.4f} s "
           f"({'parallel' if args.parallel else 'serial'})")
 
