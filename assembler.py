@@ -1,7 +1,7 @@
 import argparse, fileinput, re, sys, multiprocessing, time
-from concurrent.futures import ProcessPoolExecutor, as_completed
+# from concurrent.futures import ProcessPoolExecutor, as_completed
 from typing import List, Tuple
-from itertools import islice
+# from itertools import islice
 
 
 
@@ -174,6 +174,7 @@ def assemble_one(mnem, cond, Rd, Rn, op2, is_imm, shiftop, shiftimm):
         | op2_field                # bits 11-0 — second operand (immediate or register)
     )
 
+'''
 # 6. Chunck helper
 def chunked(iterable, size):
     it = iter(iterable)
@@ -213,7 +214,7 @@ def worker_batch_star(args):
     """
     return worker_batch(*args)
 
-
+'''
 
 # 8.  Serial & Parallel assemblers
 def assemble_serial(lines:List[str])->List[Tuple[str,int]]:                 
@@ -225,6 +226,8 @@ def assemble_serial(lines:List[str])->List[Tuple[str,int]]:
         except Exception as e: raise RuntimeError(f"[line {idx}] {e}") from None       
     return machine
 
+
+'''
 def assemble_parallel(lines: List[str], batch_size: int = 100) -> List[Tuple[str,int]]:
     """
     Split into batches, run worker_batch in parallel via executor.map,
@@ -241,6 +244,7 @@ def assemble_parallel(lines: List[str], batch_size: int = 100) -> List[Tuple[str
     flat.sort(key=lambda t: t[0])
     return [(src, word) for _, src, word in flat]
 
+    '''
 
 # 9. Formatting results
 h=lambda w:f"0x{w:08X}"
@@ -251,11 +255,8 @@ def to_bytes(ws): return b"".join(w.to_bytes(4,"little") for w in ws)
 
 # 10. CLI interface
 def main():
-    ap = argparse.ArgumentParser(description="ARMv7 DP assembler (serial / parallel, batched)")
-    ap.add_argument("files", nargs="*", help="ARM assembly source; stdin if none")
-    ap.add_argument("--parallel", action="store_true", help="enable multiprocessing")
-    ap.add_argument("--batch-size", type=int, default=100,
-                    help="number of lines per parallel batch")
+    ap = argparse.ArgumentParser(description="ARMv7 DP assembler (serial only)")
+    ap.add_argument("files", nargs="*", help="source .s files; stdin if none")
     ap.add_argument("--format", choices=["table","raw"], default="table",
                     help="output format")
     ap.add_argument("--out", help="file for raw output (.bin)")
@@ -265,10 +266,7 @@ def main():
 
     # start timer
     t0 = time.perf_counter()
-    if args.parallel:
-        pairs = assemble_parallel(lines, batch_size=args.batch_size)
-    else:
-        pairs = assemble_serial(lines)
+    pairs = assemble_serial(lines)
     elapsed = time.perf_counter() - t0
 
     if args.format == "raw":
@@ -276,8 +274,9 @@ def main():
             sys.exit("--out FILE required with --format raw")
         with open(args.out, "wb") as f:
             f.write(to_bytes([w for _, w in pairs]))
-        print(f"✓ {len(pairs)} instrs in {elapsed:.4f}s "
-              f"({'parallel' if args.parallel else 'serial'})")
+        print(f"✓ {len(pairs)} instrs in {elapsed:.4f}s (serial)"
+              # f"({'parallel' if args.parallel else 'serial'})"
+              )
         return
 
     print(f"{'ASSEMBLY':<40} | {'HEX':<10} | BINARY")
@@ -285,8 +284,9 @@ def main():
     for asm, word in pairs:
         print(f"{asm:<40} | {h(word):<10} | {b(word)}")
     print(f"\n✓ Assembled {len(pairs)} instructions in {elapsed:.4f} s "
-          f"({'parallel' if args.parallel else 'serial'})")
+          # f"({'parallel' if args.parallel else 'serial'})"
+          )
 
 if __name__ == "__main__":
-    multiprocessing.freeze_support()   # for Windows
+    #multiprocessing.freeze_support()   # for Windows
     main()
