@@ -3,7 +3,7 @@ import argparse, fileinput, re, sys, multiprocessing, time
 from typing import List, Tuple
 # from itertools import islice
 
-
+\
 
 # 1. Opcode / condition / shift lookup tables
 
@@ -51,39 +51,39 @@ ShiftTypes = {
     "ROR": 0b11,
 }                   
 
+# Data Transfer instructions
+DataTransfer = {
+    "LDR", 
+    "STR"
+}                      
+
 # 2. Simple regex tokenizer / parser
-Token = re.compile(
-    r"""
-    ^\s*                                              # start of line, optional whitespace
-
-    (?P<mnemonic>[A-Z]{2,3})(?P<cond>[A-Z]{2})?       # mnemonic + optional condition
-    \s+
-    R(?P<Rd>\d{1,2})                                  # destination register
-    (?:\s*,\s*R(?P<Rn>\d{1,2}))?                      # optional Rn
-    \s*,\s*
-
-    (?:
-        \#(?P<imm>-?\d+)                              # immediate value
-      |
-        R(?P<Rm>\d{1,2})                              # register operand
-        (?:\s*,?\s*                                   # optional comma
-            (?P<shiftop>LSL|LSR|ASR|ROR|RRX)          # optional shift type
-            (?:\s*\#(?P<shiftimm>\d+))?               # optional shift amount
-        )?                                            # end of shift clause
+Token = re.compile(r"""^\s*
+    (?P<mnemonic>[A-Z]{2,3})(?P<cond>[A-Z]{2})? \s+
+    R(?P<Rd>\d{1,2})
+    (?:                                 # ── DP form ──
+        (?:\s*,\s*R(?P<Rn>\d{1,2}))? \s*,\s*
+        (?:
+            \#(?P<imm>0x[0-9A-Fa-f]+|-?\d+) |          # ← here
+            R(?P<Rm>\d{1,2})
+            (?:\s*,?\s*(?P<shiftop>LSL|LSR|ASR|ROR|RRX)
+                (?:\s*\#(?P<shiftimm>\d+))?)?
+        )
+    |
+        \s*,\s*\[R(?P<base>\d{1,2}),\s*\#(?P<dt_imm>0x[0-9A-Fa-f]+|\d+)\]   # ← and here
     )
-
-    \s*$
-    """,
-    re.VERBOSE | re.IGNORECASE,
-)
+    \s*$""", re.VERBOSE | re.IGNORECASE)
 
 
 # 3. Parser
 def parse_line(line: str):
 
     """
-    Parse 'ADDNE R1, R2, #42' → ('ADD','NE',1,2,42)
-    Raises ValueError on bad syntax.
+    Return a tuple that tells the encoder what to do.
+
+    • For data-transfer  :  ("DT",  mn,  cond, Rd, Rn, imm12)
+    • For data-processing:  (mn,   cond, Rd, Rn, op2, is_imm, shiftop, shiftimm)
+    
     """
 
     match = Token.match(line)                                                       # match the line against the regex pattern
@@ -92,12 +92,18 @@ def parse_line(line: str):
         raise ValueError(f"syntax error: «{line.strip()}»")                         # raise an error if the line doesn't match the expected format
 
     mnemonic = match.group("mnemonic").upper()                                      # convert mnemonic to uppercase. addne or AdD is treated the same as ADD
-    cond = (match.group("cond") or "AL").upper()                                    # default to AL (always) if no condition is specified
+    cond = (match.group("cond") or "AL").upper()
     Rd = int(match.group("Rd"))                                                     # destination register
-    Rn = int(match.group("Rn") or 0)                                                # optional first operand
+    Rn = int(match.group("Rn") or 0)                                    # default to AL (always) if no condition is specified
+        
+    if mnemonic in DataTransfer and match.group("base"):
+        Rn  = int(match.group("base"))
+        off = int(match.group("dt_imm"), 0)    # base-0 again
+        return ("DT", mnemonic, cond, Rd, Rn, off)                                                # optional first operand
     
     if match.group("imm") is not None:
-        return mnemonic, cond, Rd, Rn, int(match.group("imm")), True, None, None    # immediate value (e.g., #42)
+        imm_val = int(match.group("imm"), 0)   # base-0 converts 0x, 0o, 0b, decimal
+        return mnemonic, cond, Rd, Rn, imm_val, True, None, None
     
     # register form (with optional shift)
     Rm = int(match.group("Rm"))
@@ -137,11 +143,11 @@ def encode_reg_shift(Rm: int, shiftop: str, shiftimm: int) -> int:
     return ((shiftimm & 0x1F) << 7) | (stype << 5) | (Rm & 0xF)
 
 
-# 5. Assemble one instruction → 32-bit word
+# 5. Assemble instructions → 32-bit word
 def assemble_one(mnem, cond, Rd, Rn, op2, is_imm, shiftop, shiftimm):
 
     """
-    The goal of the function is to turn one parsed assembly instruction into the
+    The goal of the function is to turn one parsed data processing assembly instruction into the
     exact 32-bit machine word that ARMv7 expects in hexadecimal format.
     """
 
@@ -172,6 +178,32 @@ def assemble_one(mnem, cond, Rd, Rn, op2, is_imm, shiftop, shiftimm):
         | (Rn << 16)               # bits 19-16 — first operand register
         | (Rd << 12)               # bits 15-12 — destination register
         | op2_field                # bits 11-0 — second operand (immediate or register)
+    )
+
+
+def assemble_transfer(mnemonic: str, cond: str, Rd: int, Rn:int, imm12: int) -> int:
+    
+    """
+    The goal of the function is to turn one parsed data transferring assembly instruction into the
+    exact 32-bit machine word that ARMv7 expects in hexadecimal format.
+    """
+
+    if not (0 <= imm12 <= 0xFFF):
+        raise ValueError("offset must be 0-4095")
+    
+    L = 1 if mnemonic == "LDR" else 0
+    cond_bits = Cond.get(cond, 0xE)
+
+    return (
+        (cond_bits << 28) |     # cond[31:28]
+        (0b01   << 26)  |       # 01 = Single data transfer
+        (1      << 24)  |       # P=1 (pre-index)
+        (1      << 23)  |       # U=1 (add offset)
+        (0      << 21)  |       # W=0 (no write-back)
+        (L      << 20)  |       # L=1 load, 0 store
+        (Rn     << 16)  |       # base register
+        (Rd     << 12)  |       # destination/source register
+        imm12                   # 12-bit immediate offset
     )
 
 '''
@@ -222,8 +254,16 @@ def assemble_serial(lines:List[str])->List[Tuple[str,int]]:
     for idx, line in enumerate(lines,1):                                                # Enumerate lines starting from 1
         src=line.partition(";")[0].strip()                                             # Remove inline comments and whitespace
         if not src: continue                                                        # Skip blank or comment-only lines
-        try: machine.append((src,assemble_one(*parse_line(src))))                       # Parse and assemble the instruction
-        except Exception as e: raise RuntimeError(f"[line {idx}] {e}") from None       
+        try:
+            parsed = parse_line(src)
+            if parsed[0] == "DT":
+                _, mnemonic, cond, Rd, Rn, imm = parsed
+                word = assemble_transfer(mnemonic, cond, Rd, Rn, imm)
+            else:
+                word = assemble_one(*parsed)
+            machine.append((src, word))                       # Parse and assemble the instruction
+        except Exception as e: 
+            raise RuntimeError(f"[line {idx}] {e}") from None       
     return machine
 
 
